@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js 3D 跑酷遊戲</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; }
+        #score {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px #000;
+            z-index: 10;
+        }
+        #instruction {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 18px;
+            text-shadow: 1px 1px 2px #000;
+            pointer-events: none;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="instruction">操作: [A/D] 左右移動 | [空白鍵] 跳躍</div>
+
+    <script>
+        // --- 變數宣告 ---
+        let scene, camera, renderer;
+        let player;
+        let ground;
+        let obstacles = [];
+        let score = 0;
+        let gameSpeed = 0.3; // 遊戲初始速度
+        let frameId;
+
+        // 玩家物理狀態
+        let playerVelocityY = 0;
+        let isJumping = false;
+        const gravity = 0.02;
+        const jumpStrength = 0.6;
+        const moveSpeed = 0.3; // 左右移動速度
+
+        // 鍵盤狀態
+        const keys = {
+            left: false,
+            right: false,
+            jump: false
+        };
+
+        // --- 初始化 ---
+        function init() {
+            // 建立場景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // 天空藍背景
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 50); // 霧氣效果
+
+            // 建立相機
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 3, 6);
+            camera.lookAt(0, 0, 0);
+
+            // 建立渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true; // 開啟陰影
+            document.body.appendChild(renderer.domElement);
+
+            // 增加光源
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 20;
+            dirLight.shadow.camera.bottom = -20;
+            dirLight.shadow.camera.left = -20;
+            dirLight.shadow.camera.right = 20;
+            scene.add(dirLight);
+
+            // 建立地板 (無限滾動的視覺效果由移動障礙物模擬)
+            const groundGeo = new THREE.PlaneGeometry(20, 100);
+            const groundMat = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // 森林綠
+            ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.z = -40; // 延伸到遠處
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 建立玩家 (方塊)
+            const playerGeo = new THREE.BoxGeometry(1, 1, 1);
+            const playerMat = new THREE.MeshStandardMaterial({ color: 0xFFD700 }); // 金色
+            player = new THREE.Mesh(playerGeo, playerMat);
+            player.position.y = 0.5; // 放在地板上 (高度1的一半)
+            player.castShadow = true;
+            player.receiveShadow = true;
+            scene.add(player);
+
+            // 事件監聽
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('keydown', onKeyDown, false);
+            document.addEventListener('keyup', onKeyUp, false);
+
+            // 開始遊戲迴圈
+            animate();
+            
+            // 定時生成障礙物
+            setInterval(spawnObstacle, 1500);
+        }
+
+        // --- 障礙物生成邏輯 ---
+        function spawnObstacle() {
+            // 隨機決定障礙物類型
+            const type = Math.random();
+            let geometry, material, mesh;
+
+            if (type > 0.5) {
+                // 類型1：地面障礙 (需要跳過)
+                geometry = new THREE.BoxGeometry(1.5, 1, 1);
+                material = new THREE.MeshStandardMaterial({ color: 0xFF4500 }); // 紅橙色
+                mesh = new THREE.Mesh(geometry, material);
+                mesh.position.y = 0.5;
+            } else {
+                // 類型2：高空障礙 (需要鑽過或避開，這裡簡化為兩側障礙)
+                // 實際上這遊戲只有跳躍，我們做一個比較寬的地面障礙
+                geometry = new THREE.BoxGeometry(3, 1.5, 1);
+                material = new THREE.MeshStandardMaterial({ color: 0x8B0000 }); // 深紅色
+                mesh = new THREE.Mesh(geometry, material);
+                mesh.position.y = 0.75;
+            }
+
+            // 隨機 X 位置 (-4 到 4)
+            const randomX = (Math.random() * 8) - 4;
+            mesh.position.x = randomX;
+            mesh.position.z = -50; // 從遠處生成
+            
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            
+            scene.add(mesh);
+            obstacles.push(mesh);
+        }
+
+        // --- 輸入處理 ---
+        function onKeyDown(event) {
+            switch(event.code) {
+                case 'ArrowLeft':
+                case 'KeyA':
+                    keys.left = true;
+                    break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    keys.right = true;
+                    break;
+                case 'Space':
+                case 'ArrowUp':
+                    keys.jump = true;
+                    break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch(event.code) {
+                case 'ArrowLeft':
+                case 'KeyA':
+                    keys.left = false;
+                    break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    keys.right = false;
+                    break;
+                case 'Space':
+                case 'ArrowUp':
+                    keys.jump = false;
+                    break;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 碰撞檢測 (AABB) ---
+        function checkCollision(box1, box2) {
+            const b1 = new THREE.Box3().setFromObject(box1);
+            const b2 = new THREE.Box3().setFromObject(box2);
+            // 稍微縮小玩家的碰撞箱，讓遊戲手感好一點(寬容度)
+            b1.expandByScalar(-0.1); 
+            return b1.intersectsBox(b2);
+        }
+
+        function gameOver() {
+            alert(`遊戲結束！得分: ${Math.floor(score)}`);
+            // 重置遊戲
+            obstacles.forEach(obs => scene.remove(obs));
+            obstacles = [];
+            score = 0;
+            gameSpeed = 0.3;
+            player.position.set(0, 0.5, 0);
+            playerVelocityY = 0;
+            document.getElementById('score').innerText = 'Score: 0';
+        }
+
+        // --- 主遊戲迴圈 ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. 玩家移動邏輯
+            if (keys.left && player.position.x > -8) {
+                player.position.x -= moveSpeed;
+                player.rotation.z = 0.1; // 移動時稍微傾斜
+            } else if (keys.right && player.position.x < 8) {
+                player.position.x += moveSpeed;
+                player.rotation.z = -0.1;
+            } else {
+                player.rotation.z = 0; // 回正
+            }
+
+            // 2. 跳躍與重力邏輯
+            if (keys.jump && !isJumping) {
+                playerVelocityY = jumpStrength;
+                isJumping = true;
+            }
+
+            player.position.y += playerVelocityY;
+            
+            // 地面碰撞模擬
+            if (player.position.y > 0.5) {
+                playerVelocityY -= gravity; // 套用重力
+                player.rotation.x -= 0.05; // 跳躍時旋轉特效
+            } else {
+                player.position.y = 0.5;
+                playerVelocityY = 0;
+                isJumping = false;
+                player.rotation.x = 0; // 著地回正
+            }
+
+            // 3. 障礙物移動與管理
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.position.z += gameSpeed; // 障礙物往玩家移動
+
+                // 碰撞檢測
+                if (checkCollision(player, obs)) {
+                    gameOver();
+                    return; // 結束這一幀
+                }
+
+                // 超出畫面移除並加分
+                if (obs.position.z > 5) {
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                    // 清理記憶體 (幾何與材質)
+                    obs.geometry.dispose();
+                    obs.material.dispose();
+                }
+            }
+
+            // 4. 更新分數與難度
+            score += 0.1;
+            document.getElementById('score').innerText = `Score: ${Math.floor(score)}`;
+            
+            // 隨時間增加速度
+            if (gameSpeed < 0.8) {
+                gameSpeed += 0.0001;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // 啟動
+        init();
+
+    </script>
+</body>
+</html>
